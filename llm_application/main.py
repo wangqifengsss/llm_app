@@ -1,78 +1,134 @@
-# 1. 导入FastAPI模块（核心步骤，固定写法）
+# 第1、2、3天的代码（保留，无需修改，新增千问模型相关配置）
 from fastapi import FastAPI
 from pydantic import BaseModel
+import requests
+from openai import OpenAI  # 千问模型兼容openai库，无需额外导入
 
-# 2. 创建FastAPI应用实例（app是实例名，后续所有接口都基于这个实例）
 app = FastAPI(
-    title="大模型应用开发接口",  # 接口文档的标题（可选，让文档更规范）
-    version="1.0"  # 接口版本（可选）
+    title="大模型应用开发接口",
+    version="1.0"
 )
 
-# 3. 定义接口：用@app.get("/")装饰器，定义接口路由和请求方法
-# @app.get("/") 表示：接口地址是 http://127.0.0.1:8000/，请求方法是GET
+# 新增：配置魔塔社区千问模型（替换原OpenAI配置，重点！）
+client = OpenAI(
+    api_key="ms-bb133002-a51a-4276-9e1b-c95c7564a45a",  # 替换为你自己的ModelScope Access Token
+    base_url="https://api-inference.modelscope.cn/v1/"  # 魔塔社区API固定地址，不可修改
+)
+
+
+# 根接口（保留）
 @app.get("/")
 def read_root():
-    # 4. 接口函数：接口被访问时，会执行这个函数，返回函数的返回值
     return {"message": "Hello World! 欢迎学习大模型应用开发", "status": "success"}
 
-# 新增：带路径参数的接口（查询用户信息）
-# 路由：/user/{user_id}，user_id是路径参数，用于接收用户ID
+
+# 路径参数接口（保留）
 @app.get("/user/{user_id}")
-def get_user(user_id: int):  # : int 限制user_id必须是数字，更规范
-    # 模拟根据用户ID查询信息，后续可对接数据库，今日先返回固定格式
+def get_user(user_id: int):
     return {
         "status": "success",
-        "user_id": user_id,  # 返回接收的路径参数
-        "username": f"user_{user_id}",  # 模拟用户名
+        "user_id": user_id,
+        "username": f"user_{user_id}",
         "message": f"成功查询到ID为{user_id}的用户"
     }
-# 新增1：定义请求体模型（用于接收复杂参数：提问+历史对话）
+
+
+# 第3天定义的请求体模型（保留，无需修改，直接复用）
 class LLMQueryRequest(BaseModel):
     question: str  # 必选字段，用户当前提问（核心参数）
-    user_id: int   # 必选字段，用户ID
-    history: list = []  # 可选字段，历史对话列表，默认空列表（无历史对话）
-    # 可新增字段，比如对话类型、模型选择等，贴合后续大模型调用
-    model: str = "gpt-3.5-turbo"  # 可选字段，默认模型，后续可对接真实模型
-
-# 新增2：带请求体的接口（POST请求，用于大模型多轮对话，替换原/query接口）
-@app.post("/llm/query")  # 用POST请求，传递复杂请求体
-def llm_query(request: LLMQueryRequest):  # request接收请求体，类型是我们定义的模型
-    # 模拟大模型多轮对话逻辑：结合历史对话和当前提问，返回回答
-    # 可通过 request.字段名 获取请求体中的所有参数
-    return {
-        "status": "success",
-        "user_id": request.user_id,
-        "question": request.question,
-        "history": request.history,
-        "model": request.model,
-        "answer": f"模拟大模型多轮回答：针对你的提问「{request.question}」，结合历史对话，答案是..."
-    }
+    user_id: int  # 必选字段，用户ID
+    history: list = []  # 可选字段，历史对话列表，默认空列表
+    model: str = "gpt-3.5-turbo"  # 可选字段，默认模型，不影响千问调用（可保留）
 
 
-# 新增3：定义响应模型（规范接口返回格式，继承BaseModel）
+# 第3天定义的响应模型（保留，无需修改，规范返回格式）
 class LLMQueryResponse(BaseModel):
-    status: str = "success"  # 固定默认值，无需手动返回
-    code: int =200   # 新增状态码，贴合企业接口规范（200=成功）
+    status: str = "success"
+    code: int = 200
     user_id: int
     question: str
     history: list
     model: str
     answer: str
-    # 可新增字段，比如响应时间，后续可扩展
-    # create_time: str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-# 修改：带请求体+响应模型的接口（新增response_model参数）
-@app.post("/llm/query", response_model=LLMQueryResponse)  # 指定响应模型
+# 修改：对接魔塔社区千问模型API的接口（替换第3天的/llm/query接口，适配你的代码）
+@app.post("/llm/query", response_model=LLMQueryResponse)
 def llm_query(request: LLMQueryRequest):
-    # 函数返回的内容，会自动按响应模型规范，多余字段会被过滤
-    return {
-        "user_id": request.user_id,
-        "question": request.question,
-        "history": request.history,
-        "model": request.model,
-        "answer": f"模拟大模型多轮回答：针对你的提问「{request.question}」，结合历史对话，答案是...",
-        "extra": "这个多余字段会被响应模型过滤，不会返回" # 测试过滤效果
-    # status和code无需手动返回，响应模型会自动填充默认值
-    }
-print("正在运行的 main.py 文件路径:", __file__)
+    try:
+        # 新增：处理边界情况1：用户提问为空
+        if not request.question.strip():
+            return {
+                "status": "error",
+                "code": 400,
+                "user_id": request.user_id,
+                "question": request.question,
+                "history": request.history,
+                "model": request.model,
+                "answer": "请输入有效的提问，不能为空！"
+            }
+
+        # 新增：处理边界情况2：历史对话格式错误（确保每个元素有question和answer字段）
+        valid_history = []
+        for item in request.history:
+            if "question" in item and "answer" in item and item["question"].strip() and item["answer"].strip():
+                valid_history.append(item)
+            else:
+                # 过滤格式错误的历史对话，不影响接口运行
+                continue
+
+        # 拼接请求参数（使用过滤后的有效历史对话，适配千问模型）
+        messages = []
+        messages.append({"role": "system", "content": "You are a helpful assistant."})
+        for item in valid_history:
+            messages.append({"role": "user", "content": item["question"]})
+            messages.append({"role": "assistant", "content": item["answer"]})
+        messages.append({"role": "user", "content": request.question})
+
+        # 调用魔塔社区千问模型API（不变，可根据需求切换stream）
+        response = client.chat.completions.create(
+            model="Qwen/Qwen3.5-35B-A3B",
+            messages=messages,
+            stream=False
+        )
+        # 解析响应（适配流式/非流式）
+
+        # llm_answer = ""
+        # for chunk in response:
+        #     if chunk.choices[0].delta.content:
+        #         llm_answer += chunk.choices[0].delta.content
+      # llm_answer = response.choices[0].message.content.strip()  # 非流式
+        llm_answer = response.choices[0].message.content.strip()
+
+        # 更新历史对话（使用有效历史对话）
+        new_history = valid_history.copy()
+        new_history.append({"question": request.question, "answer": llm_answer})
+
+        return {
+            "user_id": request.user_id,
+            "question": request.question,
+            "history": new_history,
+            "model": request.model,
+            "answer": llm_answer
+        }
+
+    except Exception as e:
+        # 优化错误提示，更简洁易懂（适配千问模型常见报错）
+        error_msg = str(e)
+        if "invalid api key" in error_msg.lower():
+            error_msg = "ModelScope Access Token无效，请检查并替换正确的Token"
+        elif "Timeout" in error_msg:
+            error_msg = "网络超时，请切换网络后重新尝试"
+        elif "Model not found" in error_msg:
+            error_msg = "模型ID错误，请确认填写为Qwen/Qwen3.5-35B-A3B"
+        elif "rate limit" in error_msg.lower():
+            error_msg = "调用频率过高，请间隔1-2秒后重新测试"
+        return {
+            "status": "error",
+            "code": 500,
+            "user_id": request.user_id,
+            "question": request.question,
+            "history": request.history,
+            "model": request.model,
+            "answer": f"接口调用失败：{error_msg}"
+        }
