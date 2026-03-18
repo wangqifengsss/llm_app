@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>千问模型多轮对话界面</title>
+    <style>
+        /* 简单CSS样式，让页面更美观，无需修改 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: "Microsoft YaHei", sans-serif;
+        }
+        body {
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .chat-header {
+            background-color: #409eff;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .chat-content {
+            height: 500px;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        .chat-message {
+            margin-bottom: 20px;
+            max-width: 70%;
+        }
+        .user-message {
+            margin-left: auto;
+            background-color: #409eff;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 10px 0 10px 10px;
+        }
+        .model-message {
+            margin-right: auto;
+            background-color: #f0f2f5;
+            color: #333;
+            padding: 10px 15px;
+            border-radius: 0 10px 10px 10px;
+        }
+        .chat-input {
+            display: flex;
+            padding: 20px;
+            border-top: 1px solid #eee;
+        }
+        #question-input {
+            flex: 1;
+            padding: 10px 15px;
+            border: 1px solid #ddd;
+            border-radius: 30px;
+            outline: none;
+            font-size: 16px;
+        }
+        #send-btn {
+            margin-left: 15px;
+            padding: 10px 25px;
+            background-color: #409eff;
+            color: white;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        #send-btn:hover {
+            background-color: #308eff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="chat-header">千问模型多轮对话（第7天实操）</div>
+        <div class="chat-content" id="chat-content">
+            <!-- 历史对话会通过JS动态添加 -->
+            <div class="chat-message model-message">你好！我是千问模型助手，请问有什么可以帮你？</div>
+        </div>
+        <div class="chat-input">
+            <input type="text" id="question-input" placeholder="请输入你的提问...">
+            <button id="send-btn">发送</button>
+        </div>
+    </div>
+
+    <script>
+        // 核心JS逻辑：对接后端/llm/query接口，实现多轮对话
+        // 1. 获取页面元素
+        const chatContent = document.getElementById('chat-content');
+        const questionInput = document.getElementById('question-input');
+        const sendBtn = document.getElementById('send-btn');
+
+        // 2. 保存历史对话（初始为空，与后端接口的history参数对应）
+        let history = [];
+
+        // 3. 固定用户ID（可修改为自己的用户ID，如1002、1003，与后端接口要求一致）
+        const userId = 1001; // 此处可微调，与Postman测试时的user_id保持一致即可
+
+        // 4. 发送提问的核心函数（对接后端/llm/query接口）
+        async function sendQuestion() {
+            // 获取用户输入的提问，去除空格
+            const question = questionInput.value.trim();
+            // 验证提问不为空（与后端接口的客户端错误校验呼应）
+            if (!question) {
+                alert('请输入有效的提问，不能为空！');
+                return;
+            }
+
+            // 4.1 先在前端展示用户提问（无需等待后端响应，提升体验）
+            addMessage(question, 'user');
+            // 清空输入框
+            questionInput.value = '';
+
+            try {
+                // 4.2 发送POST请求到后端/llm/query接口
+                const response = await fetch('http://127.0.0.1:8000/llm/query', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json', // 告诉后端请求体是JSON格式
+                    },
+                    // 请求体参数，与后端接口的LLMQueryRequest模型对应
+                    body: JSON.stringify({
+                        user_id: userId,
+                        question: question,
+                        history: history, // 传递完整历史对话，衔接第6天的多轮对话优化
+                        model: 'Qwen/Qwen3.5-35B-A3B' // 与后端使用的模型一致
+                    })
+                });
+
+                // 4.3 解析后端响应（JSON格式）
+                const result = await response.json();
+
+                // 4.4 处理响应结果
+                if (result.answer) {
+                    // 接口调用成功，展示模型回答
+                    addMessage(result.answer, 'model');
+                    // 更新历史对话（将当前提问和回答添加到历史列表）
+                    history.push({
+                        question: question,
+                        answer: result.answer
+                    });
+                } else {
+                    // 接口调用失败，展示错误提示
+                    addMessage('【接口调用失败】' + (result.message || '未知错误'), 'model');
+                }
+            } catch (error) {
+                // 捕获网络错误等异常，展示错误提示
+                addMessage('【网络错误】请检查后端服务是否启动，或接口地址是否正确', 'model');
+                console.error('接口调用异常：', error);
+            }
+        }
+
+        // 5. 辅助函数：在页面上添加对话消息
+        function addMessage(content, type) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message ${type}-message`;
+            messageDiv.textContent = content;
+            chatContent.appendChild(messageDiv);
+            // 滚动到最新消息
+            chatContent.scrollTop = chatContent.scrollHeight;
+        }
+
+        // 6. 绑定事件：点击发送按钮发送提问
+        sendBtn.addEventListener('click', sendQuestion);
+
+        // 7. 绑定事件：按回车键发送提问（提升体验）
+        questionInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                sendQuestion();
+            }
+        });
+    </script>
+</body>
+</html>
