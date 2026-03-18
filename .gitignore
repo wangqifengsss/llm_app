@@ -1,0 +1,33 @@
+﻿# Python 缓存
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# 密钥文件
+.env
+*.key
+config.py
+
+# 记忆存储
+memory_store/
+memory_store/history_memory.json
+!memory_store/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
