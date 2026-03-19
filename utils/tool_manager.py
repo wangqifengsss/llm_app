@@ -5,6 +5,7 @@
 from typing import Dict, List, Any, Optional
 from utils.config import TOOL_CALL_CONFIG  # 沿用第12天工具配置
 import json
+from datetime import datetime
 
 
 class ToolManager:
@@ -15,6 +16,7 @@ class ToolManager:
         self.tools: Dict[str, Dict[str, Any]] = self._load_tools_from_config()
         # 工具调用日志，记录每次工具调用的详细信息（便于排查问题）
         self.tool_call_logs: List[Dict[str, Any]] = []
+        self.task_split_logs = []  # 新增：任务拆解日志，记录Agent拆解任务的过程
 
     def _load_tools_from_config(self) -> Dict[str, Dict[str, Any]]:
         """从config.py中加载工具配置，转换为字典格式（便于快速查询）"""
@@ -83,6 +85,20 @@ class ToolManager:
         """清空工具调用日志（避免日志过多占用内存）"""
         self.tool_call_logs.clear()
 
+    def log_task_split(self, user_question: str, split_tasks: list) -> None:
+        """
+        记录任务拆解日志
+        :param user_question: 用户原始复杂提问
+        :param split_tasks: Agent拆解后的子任务列表
+        """
+        log = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "user_question": user_question,
+            "split_tasks": split_tasks  # 拆解后的子任务列表
+        }
+        self.task_split_logs.append(log)
+        print(f"✅ 任务拆解日志已记录：用户提问={user_question[:20]}...，拆解子任务{len(split_tasks)}个")
+
 
 # 初始化工具管理器（全局单例，整个项目只需一个工具管理器实例）
 tool_manager = ToolManager()
@@ -91,14 +107,21 @@ tool_manager = ToolManager()
 # 翻译工具配置（格式与config.py中工具格式一致）
 translate_tool = {
     "type": "function",
-    "function": {
-        "name": "query_memory",
-        "description": "用于查询长期记忆中的工具调用历史译",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-        }
-    }
+            "function": {
+                "name": "get_city_code",
+                "description": "根据城市名称，获取该城市的行政区划编码（如深圳→440300），用于后续天气查询等操作",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "城市名称（如深圳、广州、北京，仅支持国内城市）",
+
+                        }
+                    },
+                    "required": ["city"] # 必传参数
+                }
+            }
 }
 
 # 调用register_tool方法，动态注册翻译工具

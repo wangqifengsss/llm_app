@@ -12,7 +12,6 @@ env/
 # 密钥文件
 .env
 *.key
-config.py
 
 # 记忆存储
 memory_store/

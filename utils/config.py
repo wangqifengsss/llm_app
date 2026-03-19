@@ -5,9 +5,11 @@ from dotenv import load_dotenv
 # 加载环境变量
 load_dotenv()  # 自动读取项目根目录的.env文件
 
+
+
 # 豆包API配置（替换为你自己的API密钥）
 ZHIPU_CONFIG = {
-    "api_key": "xxx",  # 你的智谱API密钥
+    "api_key": os.getenv("ZHIPU_API_KEY"),  # 你的智谱API密钥
     "api_base": "https://open.bigmodel.cn/api/paas/v4/",  # 智谱兼容API地址
     "model": "GLM-4-Flash-250414",  # 选用的智谱模型版本（支持工具调用，无需修改）
     "temperature": 0.7,     # 温度参数：0-1，越低越严谨，越高越创意（适配工具调用）
@@ -16,7 +18,7 @@ ZHIPU_CONFIG = {
 
 # 通义千问API配置（替换为你自己的API密钥）
 TONGYI_CONFIG = {
-    "api_key": "xxx",    # 你的通义千问API密钥
+    "api_key": os.getenv("TONGYI_API_KEY") ,   # 你的通义千问API密钥
     "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",  # 通义千问兼容API地址
     "model": "qwen3.5-flash",   # 选用的通义千问模型版本（支持工具调用，无需修改）
     "temperature": 0.7,
@@ -104,7 +106,24 @@ TOOL_CALL_CONFIG = {
                 }
             }
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_city_code",
+                "description": "当用户询问城市编码时，优先使用此工具，根据城市名称，获取该城市的行政区划编码（如深圳→440300），用于后续天气查询等操作",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "城市名称（如深圳、广州、北京市，仅支持国内城市）",
 
+                        }
+                    },
+                    "required": ["city"] # 必传参数
+                }
+            }
+        },
     ]
 }
 # 新增：记忆功能配置（贴合今日实操，可灵活调整）
