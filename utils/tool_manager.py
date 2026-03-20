@@ -125,7 +125,7 @@ translate_tool = {
 }
 
 # 调用register_tool方法，动态注册翻译工具
-tool_manager.register_tool(translate_tool)
+# tool_manager.register_tool(translate_tool)
 
 # 测试工具管理器（可直接运行该文件，验证功能）
 if __name__ == "__main__":

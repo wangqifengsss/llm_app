@@ -124,9 +124,10 @@ def split_complex_task(user_question: str, model_type: str = "zhipu") -> list:
     :param model_type: 模型类型（zhipu/tongyi）
     :return: 拆解后的子任务列表（每个子任务是字典，包含task、tool、parameters）
     """
+
     # 构建任务拆解提示词，引导大模型按指定格式拆解任务
     split_prompt = """
-你是一个任务拆解助手，需要将用户的复杂提问，拆解为多个可执行的子任务，每个子任务对应一个可用工具，要求如下：
+你是一个任务拆解助手，需要将用户的复杂提问，拆解为多个可执行的子任务：
 1.  可用工具：calculator（计算）、search_current_weather（查询天气）、translate_cn_to_en（中译英）、query_memory（查询记忆）get_city_code（查询城市编码）；
 2.  拆解规则：
     - 每个子任务只能对应一个工具，不能一个子任务调用多个工具；
@@ -139,7 +140,7 @@ def split_complex_task(user_question: str, model_type: str = "zhipu") -> list:
           {"task": "将北京天气结果翻译成英文", "tool": "translate_cn_to_en", "parameters": {"text": "北京实时天气：温度10°C，天气晴"}},
           {"task": "计算北京温度的2倍", "tool": "calculator", "parameters": {"expression": "10*2"}}
       ]
-3.  用户当前复杂提问：""" + user_question
+3.  用户当前复杂提问"""+user_question
 
     # 调用模型，获取拆解后的子任务列表
     messages = [{"role": "user", "content": split_prompt}]
@@ -154,8 +155,38 @@ def split_complex_task(user_question: str, model_type: str = "zhipu") -> list:
         return [{"task": f"任务拆解失败：{str(e)[:30]}", "tool": "none", "parameters": {}}]
 
     # 解析模型返回的子任务列表（确保格式正确）
+    # ========== 修复：先获取原始字符串，再解析JSON ==========
     try:
-        split_tasks = json.loads(response["choices"][0]["message"]["content"])
+        # 1. 先获取原始 content
+        raw_content = response["choices"][0]["message"]["content"]
+
+        # 2. 处理 bytes 类型
+        if isinstance(raw_content, bytes):
+            raw_content = raw_content.decode('utf-8')
+
+        # 3. 处理字符串形式的 bytes 表示
+        if isinstance(raw_content, str) and raw_content.startswith("b'") and raw_content.endswith("'"):
+            import ast
+            raw_content = ast.literal_eval(raw_content).decode('utf-8')
+
+        # 4. 清理空白字符
+        raw_content = raw_content.strip()
+
+        # 5. 如果内容为空
+        if not raw_content:
+            return [{"task": "模型返回内容为空", "tool": "none", "parameters": {}}]
+
+        # 6. 处理 Markdown 代码块
+        if "```json" in raw_content:
+            raw_content = raw_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw_content:
+            parts = raw_content.split("```")
+            if len(parts) >= 2:
+                raw_content = parts[1].strip()
+
+        # 7. 解析 JSON
+        split_tasks = json.loads(raw_content)
+        # ... 后续校验 ...
         # 校验子任务格式，确保每个子任务包含task、tool、parameters
         for task in split_tasks:
             if not all(key in task for key in ["task", "tool", "parameters"]):
@@ -166,6 +197,57 @@ def split_complex_task(user_question: str, model_type: str = "zhipu") -> list:
 
     # 新增：JSON解析容错处理，解决Expecting value报错
 
+
+def sort_subtasks_by_dependency(split_tasks):
+    """
+    Agent进阶调度：子任务依赖排序（解决子任务依赖问题）
+    逻辑：1. 无依赖的子任务（如查询城市编码）优先执行；
+         2. 有依赖的子任务（如用编码查天气），在依赖任务执行完成后再执行；
+         3. 适配“该城市”“此编码”等模糊依赖，自动关联前置任务
+    """
+    # 定义子任务依赖规则（与main.py可用工具完全匹配，可扩展）
+    dependency_rules = {
+        "search_current_weather": ["get_city_code"],  # 查天气依赖查城市编码
+        "calculator": ["search_current_weather"],  # 计算器有隐性依赖
+        "translate_cn_to_en": [],  # 中译英无依赖
+        "query_memory": [],  # 查询记忆无依赖
+        "get_current_time": [],  # 获取当前时间无依赖
+        "get_city_code": []  # 查询城市编码无依赖
+    }
+
+    # 子任务排序：先执行无依赖的，再执行有依赖的
+    sorted_tasks = []
+    # 先筛选无依赖的子任务（优先执行）
+    no_dependency_tasks = [task for task in split_tasks if dependency_rules.get(task["tool"], []) == []]
+    # 再筛选有依赖的子任务（后续执行）
+    dependency_tasks = [task for task in split_tasks if dependency_rules.get(task["tool"], []) != []]
+
+    # 对有依赖的子任务进行排序，确保依赖任务先执行
+    for task in dependency_tasks:
+        # 获取当前任务的依赖工具
+        dependencies = dependency_rules[task["tool"]]
+        # 检查依赖任务是否已在排序列表中，若不在则添加到前面
+        for dep_tool in dependencies:
+            dep_task = next((t for t in split_tasks if t["tool"] == dep_tool), None)
+            if dep_task and dep_task not in sorted_tasks:
+                sorted_tasks.append(dep_task)
+        # 添加当前任务
+        if task not in sorted_tasks:
+            sorted_tasks.append(task)
+
+    # 合并无依赖任务和有依赖任务，无依赖任务优先
+    sorted_tasks = no_dependency_tasks + sorted_tasks
+    # 去重（避免重复添加）
+    unique_sorted_tasks = []
+    task_ids = set()
+    for task in sorted_tasks:
+        task_key = task["task"] + task["tool"]
+        if task_key not in task_ids:
+            task_ids.add(task_key)
+            unique_sorted_tasks.append(task)
+
+    print(f"✅ 子任务依赖排序完成，排序后：{[task['task'] for task in unique_sorted_tasks]}")
+    return unique_sorted_tasks
 
 
 def integrate_task_results(split_tasks: list, task_results: list) -> str:
@@ -189,102 +271,190 @@ def agent_run(question: str, model_type: str = "zhipu") -> str:
     """
     优化版Agent核心逻辑：整合记忆功能（短期+长期）+ 复杂任务拆解 + 多工具调度，实现全闭环
     核心升级：能自主拆解复杂任务，按顺序调用工具，整合结果，衔接第14天记忆功能
+    新增：全流程错误处理，避免任务中断
     """
-    # 1. 记忆初始化：清空当前对话的短期记忆（切换对话时）
-    memory_manager.clear_short_term_memory()
+    try:
+        # 1. 记忆初始化：清空当前对话的短期记忆（切换对话时）
+        memory_manager.clear_short_term_memory()
 
-    # 2. 感知：接收用户提问，添加到短期记忆
-    memory_manager.add_short_term_memory({"role": "user", "content": question})
+        # 2. 感知：接收用户提问，添加到短期记忆
+        memory_manager.add_short_term_memory({"role": "user", "content": question})
 
-    # 3. 规划：获取所有已注册工具 + 记忆信息，判断是否为复杂任务
-    all_tools = tool_manager.get_all_tools()
-    long_term_memory = memory_manager.get_long_term_memory(limit=MEMORY_CONFIG["long_term_memory_limit"])
-    short_term_memory = memory_manager.get_short_term_memory()
+        # 3. 规划：获取所有已注册工具 + 记忆信息，判断是否为复杂任务
+        all_tools = tool_manager.get_all_tools()
+        long_term_memory = memory_manager.get_long_term_memory(limit=MEMORY_CONFIG["long_term_memory_limit"])
+        short_term_memory = memory_manager.get_short_term_memory()
 
-    # 新增：判断是否为复杂任务（包含多个操作，需拆解）
-    # 简单判断：提问中包含“和”“并”“然后”“再”等连接词，视为复杂任务
-    complex_task_keywords = ["和", "并", "然后", "再", "同时", "依次"]
-    is_complex_task = any(keyword in question for keyword in complex_task_keywords)
+        # 新增：判断是否为复杂任务（包含多个操作，需拆解）
+        # 简单判断：提问中包含“和”“并”“然后”“再”等连接词，视为复杂任务
+        complex_task_keywords = ["和", "并", "然后", "再", "同时", "依次"]
+        is_complex_task = any(keyword in question for keyword in complex_task_keywords)
 
-    # 4. 复杂任务拆解：若为复杂任务，先拆解为子任务
-    if is_complex_task:
-        print(f"\n=== 检测到复杂任务，开始拆解 ===")
-        split_tasks = split_complex_task(question, model_type)
-        # 记录任务拆解日志
-        tool_manager.log_task_split(question, split_tasks)
-        print(f"=== 任务拆解完成，共{len(split_tasks)}个子任务：{[task['task'] for task in split_tasks]} ===")
+        # 4. 复杂任务拆解：若为复杂任务，先拆解为子任务
+        if is_complex_task:
+            print(f"\n=== 检测到复杂任务，开始拆解 ===")
+            split_tasks = split_complex_task(question, model_type)
+            # 记录任务拆解日志
+            tool_manager.log_task_split(question, split_tasks)
+            print(f"=== 任务拆解完成，共{len(split_tasks)}个子任务：{[task['task'] for task in split_tasks]} ===")
 
-        # 校验拆解结果，若拆解失败，直接返回错误
-        if split_tasks[0]["tool"] == "none":
-            error_msg = split_tasks[0]["task"]
-            memory_manager.add_short_term_memory({"role": "assistant", "content": error_msg})
-            return error_msg
+            # 校验拆解结果，若拆解失败，直接返回错误
+            if split_tasks[0]["tool"] == "none":
+                error_msg = split_tasks[0]["task"]
+                memory_manager.add_short_term_memory({"role": "assistant", "content": error_msg})
+                return error_msg
 
-        # 执行所有子任务（按顺序执行，复用记忆和工具结果）
-        task_results = []
-        # 新增：子任务去重，避免重复执行（解决tongyi模型拆解重复问题）
-        unique_tasks = []
-        task_ids = set()
-        for task in split_tasks:
-            # 用任务名称作为唯一标识，去重
-            task_key = task["task"] + task["tool"]
-            if task_key not in task_ids:
-                task_ids.add(task_key)
-                unique_tasks.append(task)
-        split_tasks = unique_tasks  # 替换为去重后的子任务列表
-        for task in split_tasks:
-            tool_name = task["tool"]
-            tool_params = task["parameters"]
+            # 执行所有子任务（按顺序执行，复用记忆和工具结果）
+            task_results = []
+            # 新增：子任务去重，避免重复执行（解决tongyi模型拆解重复问题）
+            unique_tasks = []
+            task_ids = set()
+            for task in split_tasks:
+                # 用任务名称作为唯一标识，去重
+                task_key = task["task"] + task["tool"]
+                if task_key not in task_ids:
+                    task_ids.add(task_key)
+                    unique_tasks.append(task)
+            split_tasks = unique_tasks  # 替换为去重后的子任务列表
+            split_tasks = sort_subtasks_by_dependency(split_tasks)
+            for task in split_tasks:
+                tool_name = task["tool"]
+                tool_params = task["parameters"]
 
-            # 优化：复用记忆中的信息（如之前查询过的城市、翻译结果）
-            if "复用长期记忆" in task["task"]:
-                # 从长期记忆中提取所需信息（以天气查询为例，可扩展）
-                for mem in long_term_memory:
-                    if mem["type"] == "tool_call" and "search_current_weather" in mem["content"]:
-                        # 提取记忆中的城市名称
-                        import re
-                        location_match = re.search(r"【(.*?)】", mem["content"])
-                        if location_match:
-                            tool_params["location"] = location_match.group(1)
-                            print(f"✅ 复用长期记忆，获取城市：{tool_params['location']}")
+                # 校验子任务格式，避免格式错误导致工具调用失败
+                if not all(key in task for key in ["task", "tool", "parameters"]):
+                    task_result = "❌ 子任务执行失败：子任务格式错误，缺少task/tool/parameters字段"
+                    task_results.append(task_result)
+                    print(task_result)
+                    continue
 
-            # 新增：子任务失败重试逻辑（最多重试1次）
-            retry_count = 0  # 重试次数计数器
-            max_retry = 1  # 最大重试次数
-            tool_result = ""
-            while retry_count <= max_retry:
-                try:
-                    # 执行当前子任务的工具
-                    print(f"\n=== 执行子任务：{task['task']}，调用工具：{tool_name}，参数：{tool_params} ====")
-                    print(f"=== 第{retry_count + 1}次执行（重试次数：{retry_count}）===")
-                    tool_result = execute_tool(tool_name, tool_params)
-                    print(f"=== 子任务执行成功，结果：{tool_result[:30]}... ====")
-                    break  # 执行成功，跳出重试循环
-                except Exception as e:
-                    retry_count += 1
-                    error_msg = f"子任务执行失败：{str(e)[:30]}"
-                    print(f"❌ {error_msg}，将进行第{retry_count}次重试（最多重试{max_retry}次）")
-                    # 重试次数耗尽，记录失败信息
-                    if retry_count > max_retry:
-                        tool_result = error_msg + "（已重试1次，仍失败，跳过该子任务）"
-                        print(f"❌ 重试次数耗尽，记录失败信息，继续执行下一个子任务")
+                # 新增：get_city_code工具参数纠错（适配tongyi模型拆解的city_name参数）
+                if tool_name == "get_city_code":
+                    # 若参数是city_name，自动转换为必传的city参数（契合config.py配置）
+                    if "city_name" in tool_params and "city" not in tool_params:
+                        tool_params["city"] = tool_params["city_name"]
+                        del tool_params["city_name"]
+                        print(f"✅ 纠正get_city_code参数名称，将city_name转换为city，参数更新为：{tool_params}")
+                    # 再次校验city参数是否存在（避免转换后仍缺失）
+                    if "city" not in tool_params or not tool_params["city"]:
+                        task_result = "❌ 子任务执行失败：get_city_code工具缺少必传参数【city】（城市名称）"
+                        task_results.append(task_result)
+                        print(task_result)
+                        continue
 
-            task_results.append(tool_result)
-            # 将子任务执行结果添加到短期记忆，供后续子任务复用
-            memory_manager.add_short_term_memory({
-                "role": "tool",
-                "content": f"子任务【{task['task']}】调用工具【{tool_name}】，结果：{tool_result}"
-            })
+                # 优化：复用记忆中的信息（如之前查询过的城市、翻译结果）
+                if "复用长期记忆" in task["task"]:
+                    # 从长期记忆中提取所需信息（以天气查询为例，可扩展）
+                    for mem in long_term_memory:
+                        if mem["type"] == "tool_call" and "search_current_weather" in mem["content"]:
+                            # 提取记忆中的城市名称
+                            import re
+                            location_match = re.search(r"【(.*?)】", mem["content"])
+                            if location_match:
+                                tool_params["location"] = location_match.group(1)
+                                print(f"✅ 复用长期记忆，获取城市：{tool_params['location']}")
 
-        # 整合所有子任务结果，生成最终回答
-        final_answer = integrate_task_results(split_tasks, task_results)
-        memory_manager.add_short_term_memory({"role": "assistant", "content": final_answer})
-        return final_answer
+                # 适配“该城市”“此城市”“该编码”“上一步获取的城市编码”等模糊表述，替换为已查询的城市（解决天气参数错误）
+                if tool_name == "search_current_weather":
+                    # 检查当前是否有 location 参数
+                    location = tool_params.get("location")
+                    if location and location not in ["需后续获取", "该城市", "此城市", "该编码", "上一步获取的城市编码"]:
+                        pass
+                    else:
+                        # 新增：容错处理——若子任务1（查编码）执行失败，直接提示，避免无效参数转换
+                        code_task_success = any(
+                            "get_city_code" in mem["content"] and "城市编码查询结果" in mem["content"] for mem in
+                            memory_manager.short_term_memory)
+                        if not code_task_success:
+                            task_result = "❌ 子任务执行失败：未成功查询到城市编码，无法进行天气查询，请先确保城市编码查询成功"
+                            task_results.append(task_result)
+                            print(task_result)
+                            continue
+                    # 场景1：参数是location，且为模糊表述（该城市、此城市）
+                    if tool_params.get("location") in ["需后续获取", "该城市", "此城市"]:
+                        # 从短期记忆中提取已查询的城市信息（如深圳）
+                        city_found = False
+                        for mem in memory_manager.short_term_memory:
+                            if "get_city_code" in mem["content"]:
+                                import re
+                                city_match = re.search(r"城市：(.*?)，", mem["content"])
+                                if city_match:
+                                    tool_params["location"] = city_match.group(1)
+                                    print(
+                                        f"✅ 替换模糊参数，将'该城市'替换为{tool_params['location']}，参数更新为：{tool_params}")
+                                    city_found = True
+                                    break
+                        if not city_found:
+                            task_result = "❌ 子任务执行失败：未查询到城市信息，无法替换'该城市'参数"
+                            task_results.append(task_result)
+                            print(task_result)
+                            continue
+                    # 场景2：参数是city_code（子任务拆解传入编码参数），转换为location（城市名称）
+                    elif "city_code" in tool_params:
+                        # 从短期记忆中提取城市编码对应的城市名称
+                        city_found = False
+                        for mem in memory_manager.short_term_memory:
+                            if "get_city_code" in mem["content"]:
+                                import re
+                                # 提取记忆中的城市名称和编码，匹配当前city_code
+                                city_match = re.search(r"城市：(.*?)，行政区划编码：(.*?)（", mem["content"])
+                                if city_match:
+                                    mem_city_name = city_match.group(1)
+                                    mem_city_code = city_match.group(2)
+                                    # 若记忆中的编码与当前参数city_code一致，替换为城市名称
+                                    if mem_city_code == tool_params["city_code"] or tool_params[
+                                        "city_code"] == "需后续获取":
+                                        tool_params["location"] = mem_city_name
+                                        # 删除无效的city_code参数，保留location参数
+                                        del tool_params["city_code"]
+                                        print(
+                                            f"✅ 转换编码参数，将city_code替换为城市名称{mem_city_name}，参数更新为：{tool_params}")
+                                        city_found = True
+                                        break
 
-    # 5. 非复杂任务：沿用第14天逻辑，结合记忆处理提问（无需拆解）
-    else:
-        # 构建大模型提示词（沿用第14天优化后的提示词，新增任务拆解相关说明）
-        system_prompt = f"""
+                        if not city_found:
+                            task_result = "❌ 子任务执行失败：未查询到对应城市编码的城市名称，无法转换参数"
+                            task_results.append(task_result)
+                            print(task_result)
+                            continue
+
+                # 新增：子任务失败重试逻辑（最多重试1次）
+                retry_count = 0  # 重试次数计数器
+                max_retry = 1  # 最大重试次数
+                tool_result = ""
+                while retry_count <= max_retry:
+                    try:
+                        # 执行当前子任务的工具
+                        print(f"\n=== 执行子任务：{task['task']}，调用工具：{tool_name}，参数：{tool_params} ====")
+                        print(f"=== 第{retry_count + 1}次执行（重试次数：{retry_count}）===")
+                        tool_result = execute_tool(tool_name, tool_params)
+                        print(f"=== 子任务执行成功，结果：{tool_result[:30]}... ====")
+                        break  # 执行成功，跳出重试循环
+                    except Exception as e:
+                        retry_count += 1
+                        error_msg = f"子任务执行失败：{str(e)[:30]}"
+                        print(f"❌ {error_msg}，将进行第{retry_count}次重试（最多重试{max_retry}次）")
+                        # 重试次数耗尽，记录失败信息
+                        if retry_count > max_retry:
+                            tool_result = error_msg + "（已重试1次，仍失败，跳过该子任务）"
+                            print(f"❌ 重试次数耗尽，记录失败信息，继续执行下一个子任务")
+
+                task_results.append(tool_result)
+                # 将子任务执行结果添加到短期记忆，供后续子任务复用
+                memory_manager.add_short_term_memory({
+                    "role": "tool",
+                    "content": f"子任务【{task['task']}】调用工具【{tool_name}】，结果：{tool_result}"
+                })
+
+            # 整合所有子任务结果，生成最终回答
+            final_answer = integrate_task_results(split_tasks, task_results)
+            memory_manager.add_short_term_memory({"role": "assistant", "content": final_answer})
+            return final_answer
+
+        # 5. 非复杂任务：沿用第14天逻辑，结合记忆处理提问（无需拆解）
+        else:
+            # 构建大模型提示词（沿用第14天优化后的提示词，新增任务拆解相关说明）
+            system_prompt = f"""
 你是一个具备记忆功能的Agent，需要结合短期记忆（当前对话）和长期记忆（历史记录），调用工具完成用户提问。
 1.  短期记忆：{json.dumps(short_term_memory, ensure_ascii=False)}（当前对话的用户提问、工具调用结果）
 2.  长期记忆：{json.dumps(long_term_memory, ensure_ascii=False)}（历史工具调用、用户偏好，重点关注tool_call类型的记忆）
@@ -300,31 +470,31 @@ def agent_run(question: str, model_type: str = "zhipu") -> str:
     - 若长期记忆中无相关tool_call记录（无天气查询历史），再询问用户“你之前查过哪个城市的天气呢？”；
     - 调用工具后，需结合工具结果和记忆，生成最终回答。
 """
-        # 构建对话消息，调用模型处理非复杂任务
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question}
-        ]
+            # 构建对话消息，调用模型处理非复杂任务
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question}
+            ]
 
-        try:
-            if model_type == "zhipu":
-                response = call_zhipu_api(messages=messages, tools=all_tools, tool_choice="auto")
-            elif model_type == "tongyi":
-                response = call_tongyi_api(messages=messages, tools=all_tools, tool_choice="auto")
-            else:
-                return "错误：不支持的模型类型，仅支持zhipu、tongyi"
-        except Exception as e:
-            return f"API调用失败：{str(e)[:50]}"
+            try:
+                if model_type == "zhipu":
+                    response = call_zhipu_api(messages=messages, tools=all_tools, tool_choice="auto")
+                elif model_type == "tongyi":
+                    response = call_tongyi_api(messages=messages, tools=all_tools, tool_choice="auto")
+                else:
+                    return "错误：不支持的模型类型，仅支持zhipu、tongyi"
+            except Exception as e:
+                return f"API调用失败：{str(e)[:50]}"
 
-        # 解析响应，执行工具（沿用第14天逻辑）
-        choice = response.get("choices", [{}])[0]
-        message = choice.get("message", {})
-        tool_calls = message.get("tool_calls", [])
+            # 解析响应，执行工具（沿用第14天逻辑）
+            choice = response.get("choices", [{}])[0]
+            message = choice.get("message", {})
+            tool_calls = message.get("tool_calls", [])
 
-        if not tool_calls:
-            answer = message.get("content", "无回答内容")
-            memory_manager.add_short_term_memory({"role": "assistant", "content": answer})
-            return answer
+            if not tool_calls:
+                answer = message.get("content", "无回答内容")
+                memory_manager.add_short_term_memory({"role": "assistant", "content": answer})
+                return answer
 
         # 循环执行工具，记录记忆
         for tool_call in tool_calls:
@@ -361,6 +531,17 @@ def agent_run(question: str, model_type: str = "zhipu") -> str:
         final_answer = final_response.get("choices", [{}])[0].get("message", {}).get("content", "生成最终回答失败")
         memory_manager.add_short_term_memory({"role": "assistant", "content": final_answer})
         return final_answer
+
+    # 全局错误捕获，覆盖所有流程报错
+    except Exception as e:
+        error_msg = f"❌ 任务整体执行失败：{str(e)}"
+        print(error_msg)
+        # 记录错误信息到短期记忆
+        memory_manager.add_short_term_memory({
+            "role": "system",
+            "content": error_msg
+        })
+        return f"很抱歉，任务执行异常：{str(e)}。请检查提问格式、模型配置或网络环境，重试即可。"
 
 
 # FastAPI接口（优化：新增记忆功能支持，返回记忆信息，沿用原有接口地址）

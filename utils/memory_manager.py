@@ -3,6 +3,7 @@ from typing import List, Dict, Any
 import json
 import os
 from datetime import datetime
+from utils.config import MEMORY_CONFIG
 
 
 class MemoryManager:
@@ -71,8 +72,8 @@ class MemoryManager:
         """
         content["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.long_term_memory.append(content)
-        if len(self.short_term_memory) > 50:
-            self.short_term_memory.pop(0)  # 删除最早的一条记忆
+        if len(self.long_term_memory) > 500:
+            self.long_term_memory.pop(0)  # 删除最早的一条记忆
         # 保存到本地文件（实时持久化）
         self.save_long_term_memory()
         print(f"✅ 新增长期记忆：{content['content'][:20]}...")

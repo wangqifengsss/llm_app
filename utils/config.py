@@ -16,6 +16,8 @@ ZHIPU_CONFIG = {
     "max_tokens": 2048      # 最大输出token（足够满足工具调用及回答生成）
 }
 
+
+
 # 通义千问API配置（替换为你自己的API密钥）
 TONGYI_CONFIG = {
     "api_key": os.getenv("TONGYI_API_KEY") ,   # 你的通义千问API密钥
@@ -25,8 +27,17 @@ TONGYI_CONFIG = {
     "max_tokens": 2048
 }
 
+
+
 # 工具调用配置：定义支持的工具列表（后续Agent扩展核心，今日先实现2个基础工具）
 TOOL_CALL_CONFIG = {
+    # 工具重试次数（默认1次，可修改，重试次数过多会影响效率）
+    "max_retry": 1,
+    # 工具日志：是否记录任务拆解日志（默认True，打印拆解过程；False不打印）
+    "log_task_split": True,
+    # 工具调用：是否允许重复调用同一工具（默认True，支持重复调用；False禁止）
+    "allow_repeat_tool": True,
+
     "tools": [
         #工具1用来数学计算
         {
@@ -129,6 +140,8 @@ TOOL_CALL_CONFIG = {
 # 新增：记忆功能配置（贴合今日实操，可灵活调整）
 MEMORY_CONFIG = {
     "short_term_memory_limit": 10,  # 短期记忆最大条数（与memory_manager.py一致）
-    "long_term_memory_limit": 5,    # 大模型获取长期记忆的最大条数（避免信息冗余）
-    "save_long_term_memory": True  # 是否开启长期记忆持久化（默认开启）
+    "long_term_memory_limit": 50,    # 大模型获取长期记忆的最大条数（避免信息冗余）
+    "memory_expire_days": 7, # 长期记忆：过期时间（单位：天，默认7天，可修改）
+    "save_long_term_memory": True,  # 是否开启长期记忆持久化（默认开启）
+
 }
